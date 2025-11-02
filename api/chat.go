@@ -8,7 +8,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-
 )
 
 // --- Define the chat message structs ---
@@ -67,7 +66,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GEMINI_API_KEY env var is NOT SET", http.StatusInternalServerError)
 		return
 	}
-	
+
 	// --- ALL DATABASE CODE IS REMOVED ---
 
 	// 3. Parse the request (the array of messages)
@@ -94,27 +93,37 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 // Helper function to call Google Gemini
 func callGemini(messages []ChatMessage, apiKey string) (string, error) {
-	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
+	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=" + apiKey
 
-	// --- THIS IS THE CORRECTED HISTORY LOGIC ---
-
-	// 1. Create a clean list for Gemini
+	// Convert chat history to Gemini format
 	var geminiContents []GeminiContent
 
+	// Loop through the actual chat history from the UI and convert it to Gemini's format
+	for _, msg := range messages {
+		var role string
+		if msg.Sender == "user" {
+			role = "user"
+		} else {
+			role = "model" // Map our "bot" sender to the "model" role
+		}
 
-	geminiContents = append(geminiContents)
+		geminiContents = append(geminiContents, GeminiContent{
+			Role:  role,
+			Parts: []GeminiPart{{Text: msg.Text}},
+		})
+	}
 
 	reqBody := GeminiRequest{
-		Contents: geminiContents, // Pass the full, correctly formatted conversation
+		Contents: geminiContents, // Pass the full conversation history
 		GenerationConfig: GenerationConfig{
-			Temperature:     0.7,
-			TopK:            1,
-			TopP:            1.0,
-			MaxOutputTokens: 2048,
+			Temperature:     1.0,
+			TopK:            40,
+			TopP:            0.95,
+			MaxOutputTokens: 8192,
 			StopSequences:   []string{},
 		},
 	}
-	
+
 	reqBytes, _ := json.Marshal(reqBody)
 
 	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(reqBytes))
@@ -129,7 +138,7 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		bodyBytes, _ := io.ReadAll(resp.Body) // Read the error body
-		return "", fmt.Errorf("Gemini API error (%d): %s", resp.StatusCode, string(bodyBytes))
+		return "", fmt.Errorf("gemini API error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var geminiResp GeminiResponse
@@ -141,7 +150,7 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 		len(geminiResp.Candidates[0].Content.Parts) > 0 {
 		return geminiResp.Candidates[0].Content.Parts[0].Text, nil
 	}
-	
+
 	log.Printf("Empty or blocked response from Gemini: %+v", geminiResp)
 	return "I'm sorry, I couldn't process that response.", nil
 }
