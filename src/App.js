@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
+import ReactMarkdown from 'react-markdown'; // <-- 1. IMPORT THE LIBRARY
 import './App.css';
 
-// This URL stays the same
 const API_URL = "/api/chat";
 
 function App() {
@@ -14,24 +14,16 @@ function App() {
     if (!input.trim()) return;
 
     const userMessage = { sender: 'user', text: input };
-    
-    // Create the new, full message history
     const newMessages = [...messages, userMessage];
 
-    // Update the UI immediately
     setMessages(newMessages);
     setInput('');
     setIsLoading(true);
 
     try {
-      // 1. UI -> Go API
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        
-        // --- THIS IS THE FIX ---
-        // We now send the *entire* message history
-        // under the "messages" key, which the Go code expects.
         body: JSON.stringify({ messages: newMessages }),
       });
 
@@ -39,11 +31,9 @@ function App() {
         throw new Error('Failed to get a response from the bot.');
       }
 
-      // 2. Go API -> UI
       const data = await response.json();
       const botMessage = { sender: 'bot', text: data.reply };
       
-      // Add the bot's reply to the message history
       setMessages((prev) => [...prev, botMessage]);
 
     } catch (error) {
@@ -58,8 +48,16 @@ function App() {
     <div className="App">
       <div className="chat-window">
         {messages.map((msg, index) => (
+          // --- 2. THIS IS THE KEY CHANGE ---
+          // We check if the sender is the 'bot'.
+          // If yes, we render the text using <ReactMarkdown>.
+          // If no (it's the user), we just show the plain text.
           <div key={index} className={`message ${msg.sender}`}>
-            {msg.text}
+            {msg.sender === 'user' ? (
+              msg.text
+            ) : (
+              <ReactMarkdown>{msg.text}</ReactMarkdown>
+            )}
           </div>
         ))}
         {isLoading && (
