@@ -2,31 +2,28 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
-	"strings"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // --- Structs for our API ---
-type ChatRequest struct {
-	Messages []ChatMessage `json:"messages"`
-}
+type ChatRequest struct{ Message string `json:"message"` }
 type ChatResponse struct{ Reply string `json:"reply"` }
 type Order struct{ Status string; ETA time.Time }
-type ChatMessage struct {
-	Sender string `json:"sender"`
-	Text   string `json:"text"`
-}
 
 // --- Structs for Gemini API ---
 type GeminiRequest struct {
 	Contents []GeminiContent `json:"contents"`
 }
 type GeminiContent struct {
+	Role  string       `json:"role,omitempty"` // <-- THIS IS THE FIX
 	Parts []GeminiPart `json:"parts"`
 }
 type GeminiPart struct {
@@ -51,7 +48,22 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Get Gemini API Key
+	// 2. Connect to Database
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Println("ERROR: DATABASE_URL env var is NOT SET")
+		http.Error(w, "DATABASE_URL env var is NOT SET", http.StatusInternalServerError)
+		return
+	}
+	db, err := pgx.Connect(context.Background(), dbURL)
+	if err != nil {
+		log.Printf("ERROR: Unable to connect to database: %v\n", err)
+		http.Error(w, "Unable to connect to database", http.StatusInternalServerError)
+		return
+	}
+	defer db.Close(context.Background())
+
+	// 3. Get Gemini API Key
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	if geminiKey == "" {
 		log.Println("ERROR: GEMINI_API_KEY env var is NOT SET")
@@ -59,33 +71,42 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 4. Parse the user's message
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("ERROR: Could not decode request body: %v\n", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// 4. Go API -> Gemini (New Task!)
-	var promptBuilder strings.Builder
-	promptBuilder.WriteString("You are a helpful chatbot. Here is the conversation history:\n")
-
-	for _, msg := range req.Messages {
-		if msg.Sender == "user" {
-			promptBuilder.WriteString(fmt.Sprintf("User: %s\n", msg.Text))
-		} else {
-			promptBuilder.WriteString(fmt.Sprintf("Bot: %s\n", msg.Text))
-		}
+	// 5. Go API -> Database
+	orderID := "12345" // Hardcoded for demo
+	var order Order
+	err = db.QueryRow(context.Background(),
+		"SELECT status, eta FROM orders WHERE id=$1", orderID).Scan(&order.Status, &order.ETA)
+	if err != nil {
+		log.Printf("ERROR: Could not find order in database: %v\n", err)
+		http.Error(w, "Could not find order", http.StatusNotFound)
+		return
 	}
-	promptBuilder.WriteString("Bot: ") // Ask the AI to fill in the next bot response
 
-	aiReply, err := callGemini(promptBuilder.String(), geminiKey)
+	// 6. Go API -> Gemini
+	prompt := fmt.Sprintf(
+		"You are a helpful customer service agent. The user asked: '%s'. "+
+			"The real data for their order is: 'status: %s, eta: %s'. "+
+			"Give them a friendly, 1-sentence answer.",
+		req.Message,
+		order.Status,
+		order.ETA.Format("January 2"),
+	)
+	aiReply, err := callGemini(prompt, geminiKey)
 	if err != nil {
 		log.Printf("ERROR: Failed to call Gemini: %v\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// 5. Go API -> User UI
+	// 7. Go API -> User UI
 	resp := ChatResponse{Reply: aiReply}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
@@ -93,12 +114,15 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 // Helper function to call Google Gemini
 func callGemini(prompt string, apiKey string) (string, error) {
-	// We use the gemini-pro model here
+	// Use the correct, working model name
 	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 
 	reqBody := GeminiRequest{
 		Contents: []GeminiContent{
-			{Parts: []GeminiPart{{Text: prompt}}},
+			{
+				Role:  "user", // <-- THIS IS THE FIX
+				Parts: []GeminiPart{{Text: prompt}},
+			},
 		},
 	}
 	reqBytes, _ := json.Marshal(reqBody)
