@@ -2,16 +2,12 @@ package handler
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
-	"strings"
-
-	"github.com/jackc/pgx/v5" // Note: This import is no longer needed, but safe to keep
 )
 
 // --- Define the chat message structs ---
