@@ -1,4 +1,3 @@
-// File: /api/chat.go
 package handler
 
 import (
@@ -6,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log" // <--- ADDED THIS
 	"net/http"
 	"os"
 	"time"
@@ -14,12 +14,12 @@ import (
 )
 
 // --- Structs (same as before) ---
-type ChatRequest struct { Message string `json:"message"` }
-type ChatResponse struct { Reply string `json:"reply"` }
-type Order struct { Status string; ETA time.Time }
-type OpenAIRequest struct { Model string `json:"model"`; Messages []OpenAIMessage `json:"messages"` }
-type OpenAIMessage struct { Role string `json:"role"`; Content string `json:"content"` }
-type OpenAIResponse struct { Choices []struct { Message OpenAIMessage `json:"message"` } `json:"choices"` }
+type ChatRequest struct{ Message string `json:"message"` }
+type ChatResponse struct{ Reply string `json:"reply"` }
+type Order struct{ Status string; ETA time.Time }
+type OpenAIRequest struct{ Model string `json:"model"; Messages []OpenAIMessage `json:"messages"` }
+type OpenAIMessage struct{ Role string `json:"role"; Content string `json:"content"` }
+type OpenAIResponse struct{ Choices []struct{ Message OpenAIMessage `json:"message"` } `json:"choices"` }
 
 // --- This is the main function Vercel will run ---
 func Handler(w http.ResponseWriter, r *http.Request) {
@@ -35,11 +35,15 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	// --- Connect to Database ---
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
+		// --- ADDED LOGGING ---
+		log.Println("ERROR: DATABASE_URL env var is not set")
 		http.Error(w, "DATABASE_URL env var is not set", http.StatusInternalServerError)
 		return
 	}
 	db, err := pgx.Connect(context.Background(), dbURL)
 	if err != nil {
+		// --- ADDED LOGGING ---
+		log.Printf("ERROR: Unable to connect to database: %v\n", err)
 		http.Error(w, "Unable to connect to database", http.StatusInternalServerError)
 		return
 	}
@@ -48,6 +52,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	// --- Get OpenAI Key ---
 	openAIKey := os.Getenv("OPENAI_API_KEY")
 	if openAIKey == "" {
+		// --- ADDED LOGGING ---
+		log.Println("ERROR: OPENAI_API_KEY env var is not set")
 		http.Error(w, "OPENAI_API_KEY env var is not set", http.StatusInternalServerError)
 		return
 	}
@@ -55,6 +61,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	// 2. Parse the user's message
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("ERROR: Could not decode request body: %v\n", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -65,6 +72,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	err = db.QueryRow(context.Background(),
 		"SELECT status, eta FROM orders WHERE id=$1", orderID).Scan(&order.Status, &order.ETA)
 	if err != nil {
+		// --- ADDED LOGGING ---
+		log.Printf("ERROR: Could not find order in database: %v\n", err)
 		http.Error(w, "Could not find order", http.StatusNotFound)
 		return
 	}
@@ -80,6 +89,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	)
 	aiReply, err := callOpenAI(prompt, openAIKey)
 	if err != nil {
+		// --- ADDED LOGGING ---
+		log.Printf("ERROR: Failed to call OpenAI: %v\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -106,11 +117,22 @@ func callOpenAI(prompt string, apiKey string) (string, error) {
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
 
+	// --- ADDED ERROR CHECKING FOR AI ---
+	if resp.StatusCode != http.StatusOK {
+		var errResp map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		return "", fmt.Errorf("OpenAI API error (%d): %v", resp.StatusCode, errResp)
+	}
+
 	var openAIResp OpenAIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil { return "", err }
+	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil {
+		return "", err
+	}
 
 	if len(openAIResp.Choices) > 0 {
 		return openAIResp.Choices[0].Message.Content, nil
