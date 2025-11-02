@@ -5,17 +5,12 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"os"
 )
 
-type ChatRequest struct {
-	Message string `json:"message"`
-}
+type ChatRequest struct { Message string `json:"message"` }
+type ChatResponse struct { Reply string `json:"reply"` }
 
-type ChatResponse struct {
-	Reply string `json:"reply"`
-}
-
-// This is the new, simple handler
 func Handler(w http.ResponseWriter, r *http.Request) {
 	// 1. Setup CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -26,20 +21,29 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Parse the user's message
-	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("ERROR: Could not decode request: %v", err) // Log this
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	// 2. Check for DATABASE_URL
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		log.Println("ERROR: DATABASE_URL env var is NOT SET")
+		http.Error(w, "DATABASE_URL env var is NOT SET", http.StatusInternalServerError)
 		return
 	}
+	// Log that we found it, but mask the password
+	log.Println("SUCCESS: Found DATABASE_URL (host: ...supabase.co)")
 
-	// 3. Log that we received it
-	log.Printf("SUCCESS: Received message: %s", req.Message)
+	// 3. Check for OPENAI_API_KEY
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	if openAIKey == "" {
+		log.Println("ERROR: OPENAI_API_KEY env var is NOT SET")
+		http.Error(w, "OPENAI_API_KEY env var is NOT SET", http.StatusInternalServerError)
+		return
+	}
+	// Log that we found it, but mask the key
+	log.Printf("SUCCESS: Found OPENAI_API_KEY (it starts with 'sk-...')")
 
-	// 4. Send a hardcoded reply
+	// 4. Send a success message
 	resp := ChatResponse{
-		Reply: "This is a hardcoded test reply from Go. The server is working!",
+		Reply: "Test 2 Successful: Both API keys were found!",
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
