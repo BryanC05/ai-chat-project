@@ -8,13 +8,19 @@ import (
 	"net/http"
 	"os"
 	"time"
-
+	"strings"
 )
 
 // --- Structs for our API ---
-type ChatRequest struct{ Message string `json:"message"` }
+type ChatRequest struct {
+	Messages []ChatMessage `json:"messages"`
+}
 type ChatResponse struct{ Reply string `json:"reply"` }
 type Order struct{ Status string; ETA time.Time }
+type ChatMessage struct {
+	Sender string `json:"sender"`
+	Text   string `json:"text"`
+}
 
 // --- Structs for Gemini API ---
 type GeminiRequest struct {
@@ -53,7 +59,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Parse the user's message
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -61,11 +66,19 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 4. Go API -> Gemini (New Task!)
-	prompt := fmt.Sprintf(
-		"You are an expert translator. Translate the following text into Indonesian: '%s'.",
-		req.Message,
-	)
-	aiReply, err := callGemini(prompt, geminiKey)
+	var promptBuilder strings.Builder
+	promptBuilder.WriteString("You are a helpful chatbot. Here is the conversation history:\n")
+
+	for _, msg := range req.Messages {
+		if msg.Sender == "user" {
+			promptBuilder.WriteString(fmt.Sprintf("User: %s\n", msg.Text))
+		} else {
+			promptBuilder.WriteString(fmt.Sprintf("Bot: %s\n", msg.Text))
+		}
+	}
+	promptBuilder.WriteString("Bot: ") // Ask the AI to fill in the next bot response
+
+	aiReply, err := callGemini(promptBuilder.String(), geminiKey)
 	if err != nil {
 		log.Printf("ERROR: Failed to call Gemini: %v\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
