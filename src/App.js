@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import './App.css';
 
-// Vercel automatically routes /api/chat to your Go function
+// This URL stays the same
 const API_URL = "/api/chat";
 
 function App() {
@@ -14,7 +14,12 @@ function App() {
     if (!input.trim()) return;
 
     const userMessage = { sender: 'user', text: input };
-    setMessages((prev) => [...prev, userMessage]);
+    
+    // Create the new, full message history
+    const newMessages = [...messages, userMessage];
+
+    // Update the UI immediately
+    setMessages(newMessages);
     setInput('');
     setIsLoading(true);
 
@@ -23,7 +28,11 @@ function App() {
       const response = await fetch(API_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: input }),
+        
+        // --- THIS IS THE FIX ---
+        // We now send the *entire* message history
+        // under the "messages" key, which the Go code expects.
+        body: JSON.stringify({ messages: newMessages }),
       });
 
       if (!response.ok) {
@@ -33,6 +42,8 @@ function App() {
       // 2. Go API -> UI
       const data = await response.json();
       const botMessage = { sender: 'bot', text: data.reply };
+      
+      // Add the bot's reply to the message history
       setMessages((prev) => [...prev, botMessage]);
 
     } catch (error) {
@@ -60,7 +71,7 @@ function App() {
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder="Ask about your order (ID: 12345)..."
+          placeholder="Type your message..."
         />
         <button type="submit">Send</button>
       </form>
