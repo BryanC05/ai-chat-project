@@ -93,7 +93,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 // Helper function to call Google Gemini
 func callGemini(messages []ChatMessage, apiKey string) (string, error) {
-	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key=" + apiKey
+	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 
 	// Convert chat history to Gemini format
 	var geminiContents []GeminiContent
