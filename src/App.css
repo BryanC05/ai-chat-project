@@ -19,6 +19,7 @@ body {
   flex-grow: 1;
   padding: 20px;
   overflow-y: auto;
+  display: flex;
 }
 .message {
   padding: 10px 15px;
@@ -26,17 +27,19 @@ body {
   margin-bottom: 10px;
   max-width: 80%;
   line-height: 1.4;
+  width: fit-content;
 }
 .message.user {
   background-color: #007bff;
   color: white;
   margin-left: auto;
-  text-align: right;
+  text-align: left;
 }
 .message.bot {
   background-color: #e9e9eb;
   color: black;
   margin-right: auto;
+  text-align: left;
 }
 .chat-form {
   display: flex;
@@ -61,7 +64,6 @@ body {
 }
 
 .message.bot p {
-  /* Fix spacing for paragraphs inside markdown */
   margin: 0;
 }
 
