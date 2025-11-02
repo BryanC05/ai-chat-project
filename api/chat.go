@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"os"
 
-	// We no longer need the "time" or "github.com/jackc/pgx/v5" packages
 )
 
 // --- Define the chat message structs ---
@@ -109,29 +108,11 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 			Text: "You are a helpful and friendly chatbot. Please continue the conversation. If you are asked for a recipe, provide it.",
 		}},
 	}
-	// The bot's first response to the system prompt
-	modelOpening := GeminiContent{
-		Role:  "model",
-		Parts: []GeminiPart{{Text: "Hello! I'm ready to help. What's on your mind?"}},
-	}
 
-	geminiContents = append(geminiContents, systemInstruction, modelOpening)
+	geminiContents = append(geminiContents, systemInstruction)
 
 	// 3. Loop through the *actual* chat history from the UI
 	//    and convert it to Gemini's format.
-	for _, msg := range messages {
-		var role string
-		if msg.Sender == "user" {
-			role = "user"
-		} else {
-			role = "model" // Map our "bot" sender to the "model" role
-		}
-
-		geminiContents = append(geminiContents, GeminiContent{
-			Role:  role,
-			Parts: []GeminiPart{{Text: msg.Text}},
-		})
-	}
 	// --- END CORRECTED LOGIC ---
 
 	reqBody := GeminiRequest{
