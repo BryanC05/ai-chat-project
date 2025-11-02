@@ -2,12 +2,16 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io" // <-- Added this import
+	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
+
+	"github.com/jackc/pgx/v5" // Note: This import is no longer needed, but safe to keep
 )
 
 // --- Define the chat message structs ---
@@ -25,7 +29,7 @@ type ChatResponse struct {
 // --- Structs for Gemini API ---
 type GeminiRequest struct {
 	Contents         []GeminiContent  `json:"contents"`
-	GenerationConfig GenerationConfig `json:"generationConfig"` // Added for safety
+	GenerationConfig GenerationConfig `json:"generationConfig"`
 }
 type GeminiContent struct {
 	Role  string       `json:"role,omitempty"`
@@ -34,7 +38,6 @@ type GeminiContent struct {
 type GeminiPart struct {
 	Text string `json:"text"`
 }
-// Added GenerationConfig to prevent unsafe responses
 type GenerationConfig struct {
 	Temperature     float32  `json:"temperature"`
 	TopK            int      `json:"topK"`
@@ -51,7 +54,7 @@ type GeminiResponse struct {
 }
 
 func Handler(w http.ResponseWriter, r *http.Request) {
-	// 1. Setup CORS (same as before)
+	// 1. Setup CORS
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
@@ -60,7 +63,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Get Gemini API Key (we still need this)
+	// 2. Get Gemini API Key
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	if geminiKey == "" {
 		log.Println("ERROR: GEMINI_API_KEY env var is NOT SET")
@@ -68,7 +71,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3. Parse the new request (an array of messages)
+	// 3. Parse the request (the array of messages)
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("ERROR: Could not decode request body: %v\n", err)
@@ -76,7 +79,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Go API -> Gemini (Pass the conversation history directly)
+	// 4. Go API -> Gemini
 	aiReply, err := callGemini(req.Messages, geminiKey)
 	if err != nil {
 		log.Printf("ERROR: Failed to call Gemini: %v\n", err)
@@ -95,41 +98,33 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 
 	// --- THIS IS THE NEW LOGIC ---
-	// 1. Create the system instruction.
-	// We'll add this to the start of the conversation.
-	systemInstruction := GeminiContent{
-		Role: "user", // System prompts are sent as the first "user" message
-		Parts: []GeminiPart{{
-			Text: "You are a helpful, general-purpose chatbot. Please continue the conversation. If you are asked for a recipe, provide it.",
-		}},
-	}
-	
-	// The bot's first "hello" (to set the context)
-	modelHello := GeminiContent{
-		Role: "model",
-		Parts: []GeminiPart{{
-			Text: "Hello! I'm ready to chat. How can I help you?",
-		}},
-	}
 
-	// 2. Convert our chat history into Gemini's format
+	// 1. Create a clean list for Gemini
 	var geminiContents []GeminiContent
-	geminiContents = append(geminiContents, systemInstruction, modelHello) // Start with the system prompt and first reply
 
-	// 3. Add the rest of the messages from the UI
-	// We skip the first 2 messages from the UI, as we've already added our own.
-	// This prevents the "hello" loop you saw.
-	var history []ChatMessage
-	if len(messages) > 2 {
-		history = messages[2:] // Get all messages *after* the initial "hi" and "hello"
+	// 2. Add a *single* system prompt
+	systemInstruction := GeminiContent{
+		Role: "user",
+		Parts: []GeminiPart{{
+			Text: "You are a helpful and friendly chatbot. Please continue the conversation. If you are asked for a recipe, provide it.",
+		}},
 	}
-	
-	for _, msg := range history {
+	// The bot's first response to the system prompt
+	modelOpening := GeminiContent{
+		Role:  "model",
+		Parts: []GeminiPart{{Text: "Hello! I'm ready to help. What's on your mind?"}},
+	}
+
+	geminiContents = append(geminiContents, systemInstruction, modelOpening)
+
+	// 3. Loop through the *actual* chat history from the UI
+	//    and convert it to Gemini's format.
+	for _, msg := range messages {
 		var role string
 		if msg.Sender == "user" {
 			role = "user"
 		} else {
-			role = "model" // Map "bot" to "model"
+			role = "model" // Map our "bot" sender to the "model" role
 		}
 
 		geminiContents = append(geminiContents, GeminiContent{
@@ -139,10 +134,8 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 	}
 	// --- END NEW LOGIC ---
 
-
 	reqBody := GeminiRequest{
 		Contents: geminiContents, // Pass the full, correctly formatted conversation
-		// Add default generation config for safety
 		GenerationConfig: GenerationConfig{
 			Temperature:     0.7,
 			TopK:            1,
@@ -174,13 +167,11 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 		return "", err
 	}
 
-	// Extract the text from the complex response
 	if len(geminiResp.Candidates) > 0 &&
 		len(geminiResp.Candidates[0].Content.Parts) > 0 {
 		return geminiResp.Candidates[0].Content.Parts[0].Text, nil
 	}
 	
-	// Log the full empty response if no text is found
 	log.Printf("Empty or blocked response from Gemini: %+v", geminiResp)
 	return "I'm sorry, I couldn't process that response.", nil
 }
