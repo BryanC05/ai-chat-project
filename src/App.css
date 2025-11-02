@@ -39,7 +39,6 @@ body {
   background-color: #e9e9eb;
   color: black;
   margin-right: auto;
-  text-align: left;
 }
 .chat-form {
   display: flex;
@@ -64,6 +63,7 @@ body {
 }
 
 .message.bot p {
+  /* Fix spacing for paragraphs inside markdown */
   margin: 0;
 }
 
