@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io" // <-- Added this import
 	"log"
 	"net/http"
 	"os"
-	"strings" // <-- We now need this package
-
-	// We no longer need "github.com/jackc/pgx/v5" or "time"
 )
 
 // --- Define the chat message structs ---
@@ -24,9 +22,10 @@ type ChatResponse struct {
 	Reply string `json:"reply"`
 }
 
-// --- Structs for Gemini API (same as before) ---
+// --- Structs for Gemini API ---
 type GeminiRequest struct {
-	Contents []GeminiContent `json:"contents"`
+	Contents         []GeminiContent  `json:"contents"`
+	GenerationConfig GenerationConfig `json:"generationConfig"` // Added for safety
 }
 type GeminiContent struct {
 	Role  string       `json:"role,omitempty"`
@@ -35,6 +34,14 @@ type GeminiContent struct {
 type GeminiPart struct {
 	Text string `json:"text"`
 }
+// Added GenerationConfig to prevent unsafe responses
+type GenerationConfig struct {
+	Temperature     float32  `json:"temperature"`
+	TopK            int      `json:"topK"`
+	TopP            float32  `json:"topP"`
+	MaxOutputTokens int      `json:"maxOutputTokens"`
+	StopSequences   []string `json:"stopSequences"`
+}
 type GeminiResponse struct {
 	Candidates []struct {
 		Content struct {
@@ -42,7 +49,6 @@ type GeminiResponse struct {
 		} `json:"content"`
 	} `json:"candidates"`
 }
-
 
 func Handler(w http.ResponseWriter, r *http.Request) {
 	// 1. Setup CORS (same as before)
@@ -61,8 +67,6 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GEMINI_API_KEY env var is NOT SET", http.StatusInternalServerError)
 		return
 	}
-	
-	// --- DATABASE CODE IS REMOVED ---
 
 	// 3. Parse the new request (an array of messages)
 	var req ChatRequest
@@ -72,21 +76,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Go API -> Gemini (Build a prompt *with* history)
-	var promptBuilder strings.Builder
-	promptBuilder.WriteString("You are a helpful, general-purpose chatbot. Continue the conversation.\n")
-
-	for _, msg := range req.Messages {
-		if msg.Sender == "user" {
-			promptBuilder.WriteString(fmt.Sprintf("User: %s\n", msg.Text))
-		} else if msg.Sender == "bot" {
-			promptBuilder.WriteString(fmt.Sprintf("Bot: %s\n", msg.Text))
-		}
-	}
-	// This prompts the AI to generate the *next* bot message
-	promptBuilder.WriteString("Bot: ") 
-
-	aiReply, err := callGemini(promptBuilder.String(), geminiKey)
+	// 4. Go API -> Gemini (Pass the conversation history directly)
+	aiReply, err := callGemini(req.Messages, geminiKey)
 	if err != nil {
 		log.Printf("ERROR: Failed to call Gemini: %v\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -99,18 +90,68 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// --- callGemini function is exactly the same as before ---
-func callGemini(prompt string, apiKey string) (string, error) {
+// Helper function to call Google Gemini
+func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 
+	// --- THIS IS THE NEW LOGIC ---
+	// 1. Create the system instruction.
+	// We'll add this to the start of the conversation.
+	systemInstruction := GeminiContent{
+		Role: "user", // System prompts are sent as the first "user" message
+		Parts: []GeminiPart{{
+			Text: "You are a helpful, general-purpose chatbot. Please continue the conversation. If you are asked for a recipe, provide it.",
+		}},
+	}
+	
+	// The bot's first "hello" (to set the context)
+	modelHello := GeminiContent{
+		Role: "model",
+		Parts: []GeminiPart{{
+			Text: "Hello! I'm ready to chat. How can I help you?",
+		}},
+	}
+
+	// 2. Convert our chat history into Gemini's format
+	var geminiContents []GeminiContent
+	geminiContents = append(geminiContents, systemInstruction, modelHello) // Start with the system prompt and first reply
+
+	// 3. Add the rest of the messages from the UI
+	// We skip the first 2 messages from the UI, as we've already added our own.
+	// This prevents the "hello" loop you saw.
+	var history []ChatMessage
+	if len(messages) > 2 {
+		history = messages[2:] // Get all messages *after* the initial "hi" and "hello"
+	}
+	
+	for _, msg := range history {
+		var role string
+		if msg.Sender == "user" {
+			role = "user"
+		} else {
+			role = "model" // Map "bot" to "model"
+		}
+
+		geminiContents = append(geminiContents, GeminiContent{
+			Role:  role,
+			Parts: []GeminiPart{{Text: msg.Text}},
+		})
+	}
+	// --- END NEW LOGIC ---
+
+
 	reqBody := GeminiRequest{
-		Contents: []GeminiContent{
-			{
-				Role:  "user",
-				Parts: []GeminiPart{{Text: prompt}},
-			},
+		Contents: geminiContents, // Pass the full, correctly formatted conversation
+		// Add default generation config for safety
+		GenerationConfig: GenerationConfig{
+			Temperature:     0.7,
+			TopK:            1,
+			TopP:            1.0,
+			MaxOutputTokens: 2048,
+			StopSequences:   []string{},
 		},
 	}
+	
 	reqBytes, _ := json.Marshal(reqBody)
 
 	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(reqBytes))
@@ -124,9 +165,8 @@ func callGemini(prompt string, apiKey string) (string, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		var errResp map[string]interface{}
-		json.NewDecoder(resp.Body).Decode(&errResp)
-		return "", fmt.Errorf("Gemini API error (%d): %v", resp.StatusCode, errResp)
+		bodyBytes, _ := io.ReadAll(resp.Body) // Read the error body
+		return "", fmt.Errorf("Gemini API error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var geminiResp GeminiResponse
@@ -134,9 +174,13 @@ func callGemini(prompt string, apiKey string) (string, error) {
 		return "", err
 	}
 
+	// Extract the text from the complex response
 	if len(geminiResp.Candidates) > 0 &&
 		len(geminiResp.Candidates[0].Content.Parts) > 0 {
 		return geminiResp.Candidates[0].Content.Parts[0].Text, nil
 	}
-	return "", fmt.Errorf("no reply from Gemini")
+	
+	// Log the full empty response if no text is found
+	log.Printf("Empty or blocked response from Gemini: %+v", geminiResp)
+	return "I'm sorry, I couldn't process that response.", nil
 }
