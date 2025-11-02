@@ -114,7 +114,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 // Helper function to call Google Gemini
 func callGemini(prompt string, apiKey string) (string, error) {
 	// We use the gemini-pro model here
-	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-vision:generateContent?key=" + apiKey
+	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 
 	reqBody := GeminiRequest{
 		Contents: []GeminiContent{
