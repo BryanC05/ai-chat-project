@@ -1,18 +1,43 @@
-// File: /api/chat.go
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
 
-type ChatRequest struct{ Message string `json:"message"` }
-type ChatResponse struct{ Reply string `json:"reply"` }
+// --- Structs ---
+// --- Structs ---
+type ChatRequest struct {
+	Message string `json:"message"`
+}
+type ChatResponse struct {
+	Reply string `json:"reply"`
+}
+type Order struct {
+	Status string
+	ETA    time.Time
+}
+type OpenAIRequest struct {
+	Model    string          `json:"model"`
+	Messages []OpenAIMessage `json:"messages"`
+}
+type OpenAIMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+type OpenAIResponse struct {
+	Choices []struct {
+		Message OpenAIMessage `json:"message"`
+	} `json:"choices"`
+}
 
 func Handler(w http.ResponseWriter, r *http.Request) {
 	// 1. Setup CORS
@@ -24,41 +49,100 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Get DATABASE_URL (we know this works)
+	// 2. Connect to Database
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		log.Println("ERROR: DATABASE_URL env var is NOT SET")
 		http.Error(w, "DATABASE_URL env var is NOT SET", http.StatusInternalServerError)
 		return
 	}
-	log.Println("SUCCESS: Found DATABASE_URL")
-
-	// 3. --- THIS IS THE TEST ---
-	// Try to actually connect to the database
-	log.Println("Attempting to connect to database...")
 	db, err := pgx.Connect(context.Background(), dbURL)
 	if err != nil {
-		// If it fails, log the error and crash
 		log.Printf("ERROR: Unable to connect to database: %v\n", err)
 		http.Error(w, "Unable to connect to database", http.StatusInternalServerError)
 		return
 	}
 	defer db.Close(context.Background())
-	log.Println("SUCCESS: Connected to database!")
 
-	// 4. Try to ping the database
-	err = db.Ping(context.Background())
-	if err != nil {
-		log.Printf("ERROR: Failed to ping database: %v\n", err)
-		http.Error(w, "Failed to ping database", http.StatusInternalServerError)
+	// 3. Get OpenAI Key
+	openAIKey := os.Getenv("OPENAI_API_KEY")
+	if openAIKey == "" {
+		log.Println("ERROR: OPENAI_API_KEY env var is NOT SET")
+		http.Error(w, "OPENAI_API_KEY env var is NOT SET", http.StatusInternalServerError)
 		return
 	}
-	log.Println("SUCCESS: Pinged database!")
 
-	// 5. Send a success message
-	resp := ChatResponse{
-		Reply: "Test 3 Successful: Connected and pinged the database!",
+	// 4. Parse the user's message
+	var req ChatRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("ERROR: Could not decode request body: %v\n", err)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
 	}
+
+	// 5. Go API -> Database
+	orderID := "12345" // Hardcoded for demo
+	var order Order
+	err = db.QueryRow(context.Background(),
+		"SELECT status, eta FROM orders WHERE id=$1", orderID).Scan(&order.Status, &order.ETA)
+	if err != nil {
+		log.Printf("ERROR: Could not find order in database: %v\n", err)
+		http.Error(w, "Could not find order", http.StatusNotFound)
+		return
+	}
+
+	// 6. Go API -> OpenAI
+	prompt := fmt.Sprintf(
+		"You are a helpful customer service agent. The user asked: '%s'. "+
+			"The real data for their order is: 'status: %s, eta: %s'. "+
+			"Give them a friendly, 1-sentence answer.",
+		req.Message,
+		order.Status,
+		order.ETA.Format("January 2"),
+	)
+	aiReply, err := callOpenAI(prompt, openAIKey)
+	if err != nil {
+		log.Printf("ERROR: Failed to call OpenAI: %v\n", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// 7. Go API -> User UI
+	resp := ChatResponse{Reply: aiReply}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
+}
+
+// Helper function to call OpenAI
+func callOpenAI(prompt string, apiKey string) (string, error) {
+	apiURL := "https://api.openai.com/v1/chat/completions"
+	reqBody := OpenAIRequest{
+		Model: "gpt-3.5-turbo",
+		Messages: []OpenAIMessage{
+			{Role: "user", Content: prompt},
+		},
+	}
+	reqBytes, _ := json.Marshal(reqBody)
+	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(reqBytes))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil { return "", err }
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		var errResp map[string]interface{}
+		json.NewDecoder(resp.Body).Decode(&errResp)
+		return "", fmt.Errorf("OpenAI API error (%d): %v", resp.StatusCode, errResp)
+	}
+
+	var openAIResp OpenAIResponse
+	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil { return "", err }
+
+	if len(openAIResp.Choices) > 0 {
+		return openAIResp.Choices[0].Message.Content, nil
+	}
+	return "", fmt.Errorf("no reply from AI")
 }
