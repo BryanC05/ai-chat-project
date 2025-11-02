@@ -73,7 +73,14 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		log.Printf("ERROR: Could not decode request body: %v\n", err)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	// Validate messages
+	if len(req.Messages) == 0 {
+		log.Println("ERROR: No messages in request")
+		http.Error(w, "no messages provided", http.StatusBadRequest)
 		return
 	}
 
@@ -81,7 +88,10 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	aiReply, err := callGemini(req.Messages, geminiKey)
 	if err != nil {
 		log.Printf("ERROR: Failed to call Gemini: %v\n", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		// Return error in JSON format so frontend can read it
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(ChatResponse{Reply: fmt.Sprintf("Error: %v", err)})
 		return
 	}
 
@@ -100,6 +110,11 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 
 	// Loop through the actual chat history from the UI and convert it to Gemini's format
 	for _, msg := range messages {
+		// Skip empty messages
+		if msg.Text == "" {
+			continue
+		}
+
 		var role string
 		if msg.Sender == "user" {
 			role = "user"
@@ -113,6 +128,17 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 		})
 	}
 
+	// Ensure we have at least one message (should be a user message)
+	if len(geminiContents) == 0 {
+		return "", fmt.Errorf("no valid messages to send")
+	}
+
+	// Ensure the last message is from user (required by Gemini)
+	lastMsg := geminiContents[len(geminiContents)-1]
+	if lastMsg.Role != "user" {
+		return "", fmt.Errorf("last message must be from user")
+	}
+
 	reqBody := GeminiRequest{
 		Contents: geminiContents, // Pass the full conversation history
 		GenerationConfig: GenerationConfig{
@@ -124,26 +150,38 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 		},
 	}
 
-	reqBytes, _ := json.Marshal(reqBody)
+	reqBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal request: %v", err)
+	}
 
-	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(reqBytes))
+	req, err := http.NewRequest("POST", apiURL, bytes.NewBuffer(reqBytes))
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %v", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to make request to Gemini API: %v", err)
 	}
 	defer resp.Body.Close()
 
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response body: %v", err)
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		bodyBytes, _ := io.ReadAll(resp.Body) // Read the error body
+		log.Printf("Gemini API error response: %s", string(bodyBytes))
 		return "", fmt.Errorf("gemini API error (%d): %s", resp.StatusCode, string(bodyBytes))
 	}
 
 	var geminiResp GeminiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
-		return "", err
+	if err := json.Unmarshal(bodyBytes, &geminiResp); err != nil {
+		log.Printf("Failed to decode Gemini response: %v, body: %s", err, string(bodyBytes))
+		return "", fmt.Errorf("failed to decode response: %v", err)
 	}
 
 	if len(geminiResp.Candidates) > 0 &&
