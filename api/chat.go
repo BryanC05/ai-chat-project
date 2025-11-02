@@ -13,31 +13,29 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// --- Structs ---
-// --- Structs ---
-type ChatRequest struct {
-	Message string `json:"message"`
+// --- Structs for our API ---
+type ChatRequest struct{ Message string `json:"message"` }
+type ChatResponse struct{ Reply string `json:"reply"` }
+type Order struct{ Status string; ETA time.Time }
+
+// --- Structs for Gemini API ---
+type GeminiRequest struct {
+	Contents []GeminiContent `json:"contents"`
 }
-type ChatResponse struct {
-	Reply string `json:"reply"`
+type GeminiContent struct {
+	Parts []GeminiPart `json:"parts"`
 }
-type Order struct {
-	Status string
-	ETA    time.Time
+type GeminiPart struct {
+	Text string `json:"text"`
 }
-type OpenAIRequest struct {
-	Model    string          `json:"model"`
-	Messages []OpenAIMessage `json:"messages"`
+type GeminiResponse struct {
+	Candidates []struct {
+		Content struct {
+			Parts []GeminiPart `json:"parts"`
+		} `json:"content"`
+	} `json:"candidates"`
 }
-type OpenAIMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-type OpenAIResponse struct {
-	Choices []struct {
-		Message OpenAIMessage `json:"message"`
-	} `json:"choices"`
-}
+
 
 func Handler(w http.ResponseWriter, r *http.Request) {
 	// 1. Setup CORS
@@ -64,11 +62,11 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer db.Close(context.Background())
 
-	// 3. Get OpenAI Key
-	openAIKey := os.Getenv("OPENAI_API_KEY")
-	if openAIKey == "" {
-		log.Println("ERROR: OPENAI_API_KEY env var is NOT SET")
-		http.Error(w, "OPENAI_API_KEY env var is NOT SET", http.StatusInternalServerError)
+	// 3. Get Gemini API Key
+	geminiKey := os.Getenv("GEMINI_API_KEY")
+	if geminiKey == "" {
+		log.Println("ERROR: GEMINI_API_KEY env var is NOT SET")
+		http.Error(w, "GEMINI_API_KEY env var is NOT SET", http.StatusInternalServerError)
 		return
 	}
 
@@ -91,7 +89,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 6. Go API -> OpenAI
+	// 6. Go API -> Gemini
 	prompt := fmt.Sprintf(
 		"You are a helpful customer service agent. The user asked: '%s'. "+
 			"The real data for their order is: 'status: %s, eta: %s'. "+
@@ -100,9 +98,9 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		order.Status,
 		order.ETA.Format("January 2"),
 	)
-	aiReply, err := callOpenAI(prompt, openAIKey)
+	aiReply, err := callGemini(prompt, geminiKey)
 	if err != nil {
-		log.Printf("ERROR: Failed to call OpenAI: %v\n", err)
+		log.Printf("ERROR: Failed to call Gemini: %v\n", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -113,36 +111,43 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
-// Helper function to call OpenAI
-func callOpenAI(prompt string, apiKey string) (string, error) {
-	apiURL := "https://api.openai.com/v1/chat/completions"
-	reqBody := OpenAIRequest{
-		Model: "gpt-3.5-turbo",
-		Messages: []OpenAIMessage{
-			{Role: "user", Content: prompt},
+// Helper function to call Google Gemini
+func callGemini(prompt string, apiKey string) (string, error) {
+	// We use the gemini-pro model here
+	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=" + apiKey
+
+	reqBody := GeminiRequest{
+		Contents: []GeminiContent{
+			{Parts: []GeminiPart{{Text: prompt}}},
 		},
 	}
 	reqBytes, _ := json.Marshal(reqBody)
+
 	req, _ := http.NewRequest("POST", apiURL, bytes.NewBuffer(reqBytes))
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
 
 	client := &http.Client{}
 	resp, err := client.Do(req)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp map[string]interface{}
 		json.NewDecoder(resp.Body).Decode(&errResp)
-		return "", fmt.Errorf("OpenAI API error (%d): %v", resp.StatusCode, errResp)
+		return "", fmt.Errorf("Gemini API error (%d): %v", resp.StatusCode, errResp)
 	}
 
-	var openAIResp OpenAIResponse
-	if err := json.NewDecoder(resp.Body).Decode(&openAIResp); err != nil { return "", err }
-
-	if len(openAIResp.Choices) > 0 {
-		return openAIResp.Choices[0].Message.Content, nil
+	var geminiResp GeminiResponse
+	if err := json.NewDecoder(resp.Body).Decode(&geminiResp); err != nil {
+		return "", err
 	}
-	return "", fmt.Errorf("no reply from AI")
+
+	// Extract the text from the complex response
+	if len(geminiResp.Candidates) > 0 &&
+		len(geminiResp.Candidates[0].Content.Parts) > 0 {
+		return geminiResp.Candidates[0].Content.Parts[0].Text, nil
+	}
+	return "", fmt.Errorf("no reply from Gemini")
 }
