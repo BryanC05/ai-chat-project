@@ -8,6 +8,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	// We no longer need the "time" or "github.com/jackc/pgx/v5" packages
 )
 
 // --- Define the chat message structs ---
@@ -66,6 +68,8 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "GEMINI_API_KEY env var is NOT SET", http.StatusInternalServerError)
 		return
 	}
+	
+	// --- ALL DATABASE CODE IS REMOVED ---
 
 	// 3. Parse the request (the array of messages)
 	var req ChatRequest
@@ -93,7 +97,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 	apiURL := "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey
 
-	// --- THIS IS THE NEW LOGIC ---
+	// --- THIS IS THE CORRECTED HISTORY LOGIC ---
 
 	// 1. Create a clean list for Gemini
 	var geminiContents []GeminiContent
@@ -128,7 +132,7 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 			Parts: []GeminiPart{{Text: msg.Text}},
 		})
 	}
-	// --- END NEW LOGIC ---
+	// --- END CORRECTED LOGIC ---
 
 	reqBody := GeminiRequest{
 		Contents: geminiContents, // Pass the full, correctly formatted conversation
