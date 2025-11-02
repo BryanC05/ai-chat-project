@@ -101,19 +101,8 @@ func callGemini(messages []ChatMessage, apiKey string) (string, error) {
 	// 1. Create a clean list for Gemini
 	var geminiContents []GeminiContent
 
-	// 2. Add a *single* system prompt
-	systemInstruction := GeminiContent{
-		Role: "user",
-		Parts: []GeminiPart{{
-			Text: "You are a helpful and friendly chatbot. Please continue the conversation. If you are asked for a recipe, provide it.",
-		}},
-	}
 
-	geminiContents = append(geminiContents, systemInstruction)
-
-	// 3. Loop through the *actual* chat history from the UI
-	//    and convert it to Gemini's format.
-	// --- END CORRECTED LOGIC ---
+	geminiContents = append(geminiContents)
 
 	reqBody := GeminiRequest{
 		Contents: geminiContents, // Pass the full, correctly formatted conversation
