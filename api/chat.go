@@ -70,16 +70,26 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	// --- ALL DATABASE CODE IS REMOVED ---
 
 	// 3. Parse the request (the array of messages)
+	bodyBytes, err := io.ReadAll(r.Body)
+	if err != nil {
+		log.Printf("ERROR: Could not read request body: %v\n", err)
+		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	log.Printf("Received request body: %s", string(bodyBytes))
+
 	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("ERROR: Could not decode request body: %v\n", err)
+	if err := json.Unmarshal(bodyBytes, &req); err != nil {
+		log.Printf("ERROR: Could not decode request body: %v, body: %s\n", err, string(bodyBytes))
 		http.Error(w, fmt.Sprintf("invalid request: %v", err), http.StatusBadRequest)
 		return
 	}
 
 	// Validate messages
+	log.Printf("Parsed request with %d messages", len(req.Messages))
 	if len(req.Messages) == 0 {
-		log.Println("ERROR: No messages in request")
+		log.Printf("ERROR: No messages in request, raw body was: %s", string(bodyBytes))
 		http.Error(w, "no messages provided", http.StatusBadRequest)
 		return
 	}
