@@ -2,7 +2,6 @@ package handler
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,7 +9,6 @@ import (
 	"os"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 )
 
 // --- Structs for our API ---
@@ -47,22 +45,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Connect to Database
-	dbURL := os.Getenv("DATABASE_URL")
-	if dbURL == "" {
-		log.Println("ERROR: DATABASE_URL env var is NOT SET")
-		http.Error(w, "DATABASE_URL env var is NOT SET", http.StatusInternalServerError)
-		return
-	}
-	db, err := pgx.Connect(context.Background(), dbURL)
-	if err != nil {
-		log.Printf("ERROR: Unable to connect to database: %v\n", err)
-		http.Error(w, "Unable to connect to database", http.StatusInternalServerError)
-		return
-	}
-	defer db.Close(context.Background())
-
-	// 3. Get Gemini API Key
+	// 2. Get Gemini API Key
 	geminiKey := os.Getenv("GEMINI_API_KEY")
 	if geminiKey == "" {
 		log.Println("ERROR: GEMINI_API_KEY env var is NOT SET")
@@ -70,33 +53,17 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 4. Parse the user's message
+	// 3. Parse the user's message
 	var req ChatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		log.Printf("ERROR: Could not decode request body: %v\n", err)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// 5. Go API -> Database
-	orderID := "12345" // Hardcoded for demo
-	var order Order
-	err = db.QueryRow(context.Background(),
-		"SELECT status, eta FROM orders WHERE id=$1", orderID).Scan(&order.Status, &order.ETA)
-	if err != nil {
-		log.Printf("ERROR: Could not find order in database: %v\n", err)
-		http.Error(w, "Could not find order", http.StatusNotFound)
-		return
-	}
-
-	// 6. Go API -> Gemini
+	// 4. Go API -> Gemini (New Task!)
 	prompt := fmt.Sprintf(
-		"You are a helpful customer service agent. The user asked: '%s'. "+
-			"The real data for their order is: 'status: %s, eta: %s'. "+
-			"Give them a friendly, 1-sentence answer.",
+		"You are an expert translator. Translate the following text into Indonesian: '%s'.",
 		req.Message,
-		order.Status,
-		order.ETA.Format("January 2"),
 	)
 	aiReply, err := callGemini(prompt, geminiKey)
 	if err != nil {
@@ -105,7 +72,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 7. Go API -> User UI
+	// 5. Go API -> User UI
 	resp := ChatResponse{Reply: aiReply}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(resp)
